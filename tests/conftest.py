@@ -71,6 +71,11 @@ class NumpySnapshot:
         arrays_dict = actual if isinstance(actual, dict) else {"array": actual}
         arrays_dict = {k: _canonicalize_array(v) for k, v in arrays_dict.items()}
 
+        # If force_update is True, save the snapshot instead of comparing
+        if force_update:
+            np.savez(snapshot_path, **arrays_dict)
+            return
+
         # Load the snapshot
         expected_arrays = dict(np.load(snapshot_path))
 
@@ -134,6 +139,12 @@ class Snapshot:
             test_name = self.default_test_name
 
         snapshot_path = self._get_snapshot_path(test_name)
+
+        # If force_update is True, save the snapshot instead of comparing
+        if force_update:
+            with open(snapshot_path, "wb") as f:
+                pickle.dump(actual, f)
+            return
 
         # Load the snapshot
         with open(snapshot_path, "rb") as f:
