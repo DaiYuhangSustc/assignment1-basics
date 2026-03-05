@@ -9,6 +9,8 @@ This script combines:
 """
 
 import os
+import sys
+import time
 from pathlib import Path
 
 import torch
@@ -150,13 +152,47 @@ def train_minimal_lm(
     
     os.makedirs(checkpoint_dir, exist_ok=True)
     
+    def format_time(seconds: float) -> str:
+        """Format seconds into a readable time string."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            mins, secs = divmod(int(seconds), 60)
+            return f"{mins}m {secs}s"
+        else:
+            hours, remainder = divmod(int(seconds), 3600)
+            mins, secs = divmod(remainder, 60)
+            return f"{hours}h {mins}m {secs}s"
+    
+    def print_progress_bar(
+        iteration: int,
+        total: int,
+        prefix: str = "",
+        suffix: str = "",
+        length: int = 30,
+        fill: str = "█",
+    ):
+        """Print a progress bar that refreshes in place."""
+        percent = 100 * (iteration / float(total)) if total > 0 else 100
+        filled_length = int(length * iteration // total) if total > 0 else length
+        bar = fill * filled_length + "-" * (length - filled_length)
+        sys.stdout.write(f"\r{prefix} |{bar}| {iteration}/{total} ({percent:.1f}%) {suffix}")
+        sys.stdout.flush()
+    
     iteration = 0
+    # Calculate total iterations for progress tracking
+    num_samples = len(dataset) - context_length - 1
+    batches_per_epoch = (num_samples + batch_size - 1) // batch_size if num_samples > 0 else 1
+    total_iterations = num_epochs * batches_per_epoch
+    start_time = time.time()
+    
     for epoch in range(num_epochs):
         # Shuffle dataset each epoch
-        indices = np.random.permutation(len(dataset) - context_length - 1)
+        indices = np.random.permutation(num_samples)
         
         epoch_loss = 0.0
         num_batches = 0
+        epoch_start_time = time.time()
         
         for batch_idx in range(0, len(indices), batch_size):
             # Get batch
@@ -203,19 +239,33 @@ def train_minimal_lm(
             num_batches += 1
             iteration += 1
             
-            if iteration % 10 == 0:
-                avg_loss = epoch_loss / num_batches
-                print(f"Epoch {epoch + 1}/{num_epochs} | Step {iteration} | Loss: {avg_loss:.4f}")
+            # Calculate elapsed time and ETA
+            elapsed = time.time() - start_time
+            avg_time_per_iter = elapsed / iteration if iteration > 0 else 0
+            remaining_iters = total_iterations - iteration
+            eta = avg_time_per_iter * remaining_iters
+            
+            # Update progress bar
+            current_batch = batch_idx // batch_size + 1
+            avg_loss = epoch_loss / num_batches
+            print_progress_bar(
+                iteration=iteration,
+                total=total_iterations,
+                prefix=f"Epoch {epoch + 1}/{num_epochs}",
+                suffix=f"Loss: {avg_loss:.4f} | Elapsed: {format_time(elapsed)} | ETA: {format_time(eta)}",
+            )
             
             # Save checkpoint
             if iteration % save_every == 0:
                 checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_iter_{iteration}.pt")
                 save_checkpoint(model, optimizer, iteration, checkpoint_path)
-                print(f"Checkpoint saved: {checkpoint_path}")
+                # Print checkpoint message on a new line, then continue progress bar
+                print(f"\nCheckpoint saved: {checkpoint_path}")
         
-        # Epoch summary
+        # Epoch summary - print on new line
+        epoch_time = time.time() - epoch_start_time
         avg_epoch_loss = epoch_loss / num_batches
-        print(f"Epoch {epoch + 1}/{num_epochs} completed | Average Loss: {avg_epoch_loss:.4f}")
+        print(f"\nEpoch {epoch + 1}/{num_epochs} completed | Average Loss: {avg_epoch_loss:.4f} | Time: {format_time(epoch_time)}")
     
     # =========================================================================
     # 5. Save final model
@@ -224,7 +274,7 @@ def train_minimal_lm(
     save_checkpoint(model, optimizer, iteration, final_checkpoint)
     print(f"Training complete! Final model saved to: {final_checkpoint}")
     
-    return model, optimizer
+    return model, optimizer, tokenizer
 
 
 def generate_text(
@@ -257,9 +307,17 @@ def generate_text(
     token_ids = tokenizer.encode(prompt)
     input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
     
+    # Get context_length from model's RoPE max_seq_len
+    # We need to truncate to avoid index out of bounds in RoPE
+    context_length = model.context_length
+    
     # Generate
     with torch.no_grad():
         for _ in range(max_new_tokens):
+            # Truncate input to context_length if needed
+            if input_ids.shape[1] > context_length:
+                input_ids = input_ids[:, -context_length:]
+            
             # Forward pass
             logits = model(input_ids)
             
@@ -296,7 +354,7 @@ def generate_text(
 
 if __name__ == "__main__":
     # Train a minimal language model
-    model, optimizer = train_minimal_lm(
+    model, optimizer, tokenizer = train_minimal_lm(
         # Small model for quick training
         vocab_size=256,      # Byte-level vocabulary
         context_length=64,   # Short context
@@ -316,11 +374,8 @@ if __name__ == "__main__":
     print("Training completed!")
     print("="*50)
     
-    # Demo generation (if tokenizer available)
+    # Demo generation
     try:
-        # Simple byte-level tokenizer for generation
-        tokenizer = SimpleByteTokenizer()
-        
         prompt = "Once upon a time"
         print(f"\nGenerating from prompt: '{prompt}'")
         

@@ -282,8 +282,14 @@ class RotaryPositionalEmbedding(nn.Module):
         cos = self.cos_cache[token_positions]  # (..., seq_len, d_k/2)
         sin = self.sin_cache[token_positions]  # (..., seq_len, d_k/2)
         
+        # Insert a dimension for broadcasting with multi-head attention
+        # x has shape (..., num_heads, seq_len, d_k), so x1/x2 have shape (..., num_heads, seq_len, d_k/2)
+        # cos/sin have shape (..., seq_len, d_k/2), need to insert head dimension
+        cos = cos.unsqueeze(-3)  # (..., 1, seq_len, d_k/2)
+        sin = sin.unsqueeze(-3)  # (..., 1, seq_len, d_k/2)
+        
         # Split x into pairs and apply rotation
-        # x: (..., seq_len, d_k)
+        # x: (..., num_heads, seq_len, d_k)
         x_reshape = rearrange(x, "... seq (d2 pair) -> ... seq d2 pair", pair=2)
         
         # Apply rotation to each pair
